@@ -213,4 +213,55 @@ app.MapDelete("/v1/tasks/{id:long}", [Microsoft.AspNetCore.Authorization.Authori
     return Results.NoContent();
 });
 
+// Backwards-compatible routes (no /v1) used by mobile Flutter app
+app.MapPost("/login", async (LoginReq req, AppDb db) =>
+{
+    var u = await db.Users.SingleOrDefaultAsync(x => x.Email == req.Email);
+    if (u is null || !BCrypt.Net.BCrypt.Verify(req.Password, u.PasswordHash))
+        return Results.Unauthorized();
+
+    var token = JwtHelper.Issue(jwtSecret, u.Id.ToString(), new[] { "user" }, TimeSpan.FromMinutes(15));
+    return Results.Ok(new { user = new { id = u.Id, email = u.Email }, token });
+});
+
+app.MapPost("/logout", [Microsoft.AspNetCore.Authorization.Authorize] () => Results.NoContent());
+
+app.MapGet("/tasks", [Microsoft.AspNetCore.Authorization.Authorize] async (ClaimsPrincipal user, AppDb db) =>
+{
+    var uid = long.Parse(user.FindFirstValue(ClaimTypes.NameIdentifier)!);
+    var tasks = await db.Tasks.Where(t => t.UserId == uid).OrderByDescending(t => t.CreatedAt)
+                  .Select(t => new { id = t.Id, title = t.Title, done = t.Done, createdAt = t.CreatedAt })
+                  .ToListAsync();
+    return Results.Ok(tasks);
+});
+
+app.MapPost("/tasks", [Microsoft.AspNetCore.Authorization.Authorize] async (CreateTaskReq req, ClaimsPrincipal user, AppDb db) =>
+{
+    var uid = long.Parse(user.FindFirstValue(ClaimTypes.NameIdentifier)!);
+    var t = new TaskItem { Title = req.Title, Done = false, CreatedAt = DateTimeOffset.UtcNow, UserId = uid };
+    db.Tasks.Add(t);
+    await db.SaveChangesAsync();
+    return Results.Created($"/tasks/{t.Id}", new { id = t.Id, title = t.Title, done = t.Done, createdAt = t.CreatedAt });
+});
+
+app.MapPost("/tasks/{id:long}/toggle", [Microsoft.AspNetCore.Authorization.Authorize] async (long id, ClaimsPrincipal user, AppDb db) =>
+{
+    var uid = long.Parse(user.FindFirstValue(ClaimTypes.NameIdentifier)!);
+    var t = await db.Tasks.SingleOrDefaultAsync(x => x.Id == id && x.UserId == uid);
+    if (t is null) return Results.NotFound();
+    t.Done = !t.Done;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { id = t.Id, title = t.Title, done = t.Done, createdAt = t.CreatedAt });
+});
+
+app.MapDelete("/tasks/{id:long}", [Microsoft.AspNetCore.Authorization.Authorize] async (long id, ClaimsPrincipal user, AppDb db) =>
+{
+    var uid = long.Parse(user.FindFirstValue(ClaimTypes.NameIdentifier)!);
+    var t = await db.Tasks.SingleOrDefaultAsync(x => x.Id == id && x.UserId == uid);
+    if (t is null) return Results.NotFound();
+    db.Tasks.Remove(t);
+    await db.SaveChangesAsync();
+    return Results.NoContent();
+});
+
 app.Run();
