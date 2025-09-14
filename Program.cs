@@ -62,6 +62,30 @@ builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen(c =>
 {
     c.SwaggerDoc("v1", new OpenApiInfo { Title = "API", Version = "v1" });
+    // Add JWT Bearer auth to Swagger
+    c.AddSecurityDefinition("Bearer", new Microsoft.OpenApi.Models.OpenApiSecurityScheme
+    {
+        Name = "Authorization",
+        Type = Microsoft.OpenApi.Models.SecuritySchemeType.Http,
+        Scheme = "bearer",
+        BearerFormat = "JWT",
+        In = Microsoft.OpenApi.Models.ParameterLocation.Header,
+        Description = "Enter 'Bearer <token>'"
+    });
+    c.AddSecurityRequirement(new Microsoft.OpenApi.Models.OpenApiSecurityRequirement
+    {
+        {
+            new Microsoft.OpenApi.Models.OpenApiSecurityScheme
+            {
+                Reference = new Microsoft.OpenApi.Models.OpenApiReference
+                {
+                    Type = Microsoft.OpenApi.Models.ReferenceType.SecurityScheme,
+                    Id = "Bearer"
+                }
+            },
+            Array.Empty<string>()
+        }
+    });
 });
 
 // ===== CORS =====
@@ -124,6 +148,21 @@ app.MapPost("/v1/auth/login", async (LoginReq req, AppDb db) =>
     var token = JwtHelper.Issue(jwtSecret, u.Id.ToString(), new[] { "user" }, TimeSpan.FromMinutes(15));
     var refresh = JwtHelper.Issue(jwtSecret, u.Id.ToString(), new[] { "refresh" }, TimeSpan.FromDays(30));
     return Results.Ok(new { access_token = token, refresh_token = refresh });
+});
+
+// Register
+app.MapPost("/v1/auth/register", async (RegisterReq req, AppDb db) =>
+{
+    if (string.IsNullOrWhiteSpace(req.Email) || string.IsNullOrWhiteSpace(req.Password))
+        return Results.BadRequest(new { code = "INVALID_INPUT", message = "email and password are required" });
+
+    var exists = await db.Users.AnyAsync(u => u.Email == req.Email);
+    if (exists) return Results.Conflict(new { code = "EMAIL_TAKEN", message = "Email already registered" });
+
+    var user = new User { Email = req.Email, PasswordHash = BCrypt.Net.BCrypt.HashPassword(req.Password) };
+    db.Users.Add(user);
+    await db.SaveChangesAsync();
+    return Results.Created($"/v1/users/{user.Id}", new { id = user.Id, email = user.Email });
 });
 
 app.MapGet("/v1/users/me", (ClaimsPrincipal user) =>
