@@ -146,9 +146,12 @@ app.MapPost("/v1/auth/login", async (LoginReq req, AppDb db) =>
         return Results.Unauthorized();
 
     var token = JwtHelper.Issue(jwtSecret, u.Id.ToString(), new[] { "user" }, TimeSpan.FromMinutes(15));
-    var refresh = JwtHelper.Issue(jwtSecret, u.Id.ToString(), new[] { "refresh" }, TimeSpan.FromDays(30));
-    return Results.Ok(new { access_token = token, refresh_token = refresh });
+    // return user object and token for client storage
+    return Results.Ok(new { user = new { id = u.Id, email = u.Email }, token });
 });
+
+// Logout (dummy - JWT stateless)
+app.MapPost("/v1/auth/logout", [Microsoft.AspNetCore.Authorization.Authorize] () => Results.NoContent());
 
 // Register
 app.MapPost("/v1/auth/register", async (RegisterReq req, AppDb db) =>
@@ -170,5 +173,44 @@ app.MapGet("/v1/users/me", (ClaimsPrincipal user) =>
     if (!user.Identity?.IsAuthenticated ?? true) return Results.Unauthorized();
     return Results.Ok(new { sub = user.FindFirstValue(ClaimTypes.NameIdentifier) });
 }).RequireAuthorization().RequireRateLimiting("fixed");
+
+// Tasks
+app.MapGet("/v1/tasks", [Microsoft.AspNetCore.Authorization.Authorize] async (ClaimsPrincipal user, AppDb db) =>
+{
+    var uid = long.Parse(user.FindFirstValue(ClaimTypes.NameIdentifier)!);
+    var tasks = await db.Tasks.Where(t => t.UserId == uid).OrderByDescending(t => t.CreatedAt)
+                  .Select(t => new { id = t.Id, title = t.Title, done = t.Done, createdAt = t.CreatedAt })
+                  .ToListAsync();
+    return Results.Ok(tasks);
+});
+
+app.MapPost("/v1/tasks", [Microsoft.AspNetCore.Authorization.Authorize] async (CreateTaskReq req, ClaimsPrincipal user, AppDb db) =>
+{
+    var uid = long.Parse(user.FindFirstValue(ClaimTypes.NameIdentifier)!);
+    var t = new TaskItem { Title = req.Title, Done = false, CreatedAt = DateTimeOffset.UtcNow, UserId = uid };
+    db.Tasks.Add(t);
+    await db.SaveChangesAsync();
+    return Results.Created($"/v1/tasks/{t.Id}", new { id = t.Id, title = t.Title, done = t.Done, createdAt = t.CreatedAt });
+});
+
+app.MapPost("/v1/tasks/{id:long}/toggle", [Microsoft.AspNetCore.Authorization.Authorize] async (long id, ClaimsPrincipal user, AppDb db) =>
+{
+    var uid = long.Parse(user.FindFirstValue(ClaimTypes.NameIdentifier)!);
+    var t = await db.Tasks.SingleOrDefaultAsync(x => x.Id == id && x.UserId == uid);
+    if (t is null) return Results.NotFound();
+    t.Done = !t.Done;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { id = t.Id, title = t.Title, done = t.Done, createdAt = t.CreatedAt });
+});
+
+app.MapDelete("/v1/tasks/{id:long}", [Microsoft.AspNetCore.Authorization.Authorize] async (long id, ClaimsPrincipal user, AppDb db) =>
+{
+    var uid = long.Parse(user.FindFirstValue(ClaimTypes.NameIdentifier)!);
+    var t = await db.Tasks.SingleOrDefaultAsync(x => x.Id == id && x.UserId == uid);
+    if (t is null) return Results.NotFound();
+    db.Tasks.Remove(t);
+    await db.SaveChangesAsync();
+    return Results.NoContent();
+});
 
 app.Run();
