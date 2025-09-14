@@ -111,6 +111,9 @@ app.Use(async (ctx, next) =>
 app.MapGet("/healthz", () => Results.Ok(new { status = "ok" })); // ใช้เป็น HTTP health check
 app.MapMetrics("/metrics"); // Prometheus scrape
 
+// Redirect root to Swagger UI for convenience
+app.MapGet("/", () => Results.Redirect("/swagger"));
+
 // Auth demo
 app.MapPost("/v1/auth/login", async (LoginReq req, AppDb db) =>
 {
