@@ -10,14 +10,16 @@ using Microsoft.IdentityModel.Tokens;
 using Prometheus;
 using Serilog;
 using Serilog.Formatting.Compact;
+using Microsoft.OpenApi.Models;
 
 var builder = WebApplication.CreateBuilder(args);
 
 // ===== Config & Secrets =====
-var dbUrl = Environment.GetEnvironmentVariable("DATABASE_URL") 
+var dbUrl = Environment.GetEnvironmentVariable("DATABASE_URL")
             ?? builder.Configuration.GetConnectionString("Default");
 var jwtSecret = Environment.GetEnvironmentVariable("JWT_SECRET") ?? "dev-secret-change";
 var allowOrigin = Environment.GetEnvironmentVariable("CORS_ORIGIN") ?? "*";
+
 
 // ===== Logging: structured JSON =====
 Log.Logger = new LoggerConfiguration()
@@ -55,7 +57,10 @@ builder.Services.AddRateLimiter(o =>
 
 // ===== OpenAPI =====
 builder.Services.AddEndpointsApiExplorer();
-builder.Services.AddSwaggerGen();
+builder.Services.AddSwaggerGen(c =>
+{
+    c.SwaggerDoc("v1", new OpenApiInfo { Title = "API", Version = "v1" });
+});
 
 // ===== CORS =====
 builder.Services.AddCors(p => p.AddDefaultPolicy(policy =>
@@ -75,6 +80,9 @@ using (var scope = app.Services.CreateScope())
     var db = scope.ServiceProvider.GetRequiredService<AppDb>();
     db.Database.Migrate();
 }
+var hc = builder.Services.AddHealthChecks();
+if (!string.IsNullOrWhiteSpace(dbUrl))
+    hc.AddNpgSql(dbUrl, name: "postgres");
 
 // ===== Middleware =====
 app.UseSerilogRequestLogging();
