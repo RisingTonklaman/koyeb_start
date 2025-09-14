@@ -17,7 +17,7 @@ var builder = WebApplication.CreateBuilder(args);
 // ===== Config & Secrets =====
 var rawDbUrl = Environment.GetEnvironmentVariable("DATABASE_URL")
                ?? builder.Configuration.GetConnectionString("Default");
-var dbUrl = NormalizeDbUrl(rawDbUrl);
+var dbUrl = DbUrl.NormalizeDbUrl(rawDbUrl);
 var jwtSecret = Environment.GetEnvironmentVariable("JWT_SECRET") ?? "dev-secret-change";
 var allowOrigin = Environment.GetEnvironmentVariable("CORS_ORIGIN") ?? "*";
 
@@ -118,8 +118,8 @@ app.MapPost("/v1/auth/login", async (LoginReq req, AppDb db) =>
     if (u is null || !BCrypt.Net.BCrypt.Verify(req.Password, u.PasswordHash))
         return Results.Unauthorized();
 
-    var token = Jwt.Issue(jwtSecret, u.Id.ToString(), new[] { "user" }, TimeSpan.FromMinutes(15));
-    var refresh = Jwt.Issue(jwtSecret, u.Id.ToString(), new[] { "refresh" }, TimeSpan.FromDays(30));
+    var token = JwtHelper.Issue(jwtSecret, u.Id.ToString(), new[] { "user" }, TimeSpan.FromMinutes(15));
+    var refresh = JwtHelper.Issue(jwtSecret, u.Id.ToString(), new[] { "refresh" }, TimeSpan.FromDays(30));
     return Results.Ok(new { access_token = token, refresh_token = refresh });
 });
 
@@ -130,78 +130,3 @@ app.MapGet("/v1/users/me", (ClaimsPrincipal user) =>
 }).RequireAuthorization().RequireRateLimiting("fixed");
 
 app.Run();
-
-// ===== EF Core =====
-public class AppDb : DbContext
-{
-    public AppDb(DbContextOptions<AppDb> options) : base(options) { }
-    public DbSet<User> Users => Set<User>();
-}
-public class User
-{
-    public Guid Id { get; set; } = Guid.NewGuid();
-    public string Email { get; set; } = default!;
-    public string PasswordHash { get; set; } = default!;
-}
-
-// ===== DTO =====
-public record LoginReq(string Email, string Password);
-
-// ===== JWT helper =====
-static class Jwt
-{
-    public static string Issue(string secret, string sub, IEnumerable<string> scopes, TimeSpan ttl)
-    {
-        var key = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(secret));
-        var creds = new SigningCredentials(key, SecurityAlgorithms.HmacSha256);
-        var now = DateTime.UtcNow;
-        var claims = new List<Claim> { new(ClaimTypes.NameIdentifier, sub) };
-        claims.AddRange(scopes.Select(s => new Claim("scope", s)));
-        var jwt = new System.IdentityModel.Tokens.Jwt.JwtSecurityToken(
-            claims: claims, notBefore: now, expires: now.Add(ttl), signingCredentials: creds);
-        return new System.IdentityModel.Tokens.Jwt.JwtSecurityTokenHandler().WriteToken(jwt);
-    }
-}
-
-// Convert postgres style DATABASE_URL to an Npgsql connection string if needed
-static string NormalizeDbUrl(string? input)
-{
-    if (string.IsNullOrWhiteSpace(input)) return input ?? string.Empty;
-    // Already looks like key=value;
-    if (input.Contains('=') && input.Contains(';')) return input; // assume already proper
-    // Expect formats like: postgres://user:pass@host:5432/dbname or postgresql://
-    if (input.StartsWith("postgres://", StringComparison.OrdinalIgnoreCase) ||
-        input.StartsWith("postgresql://", StringComparison.OrdinalIgnoreCase))
-    {
-        // Use Uri to parse
-        if (!Uri.TryCreate(input, UriKind.Absolute, out var uri)) return input; // fallback
-        var userInfo = uri.UserInfo.Split(':');
-        var username = Uri.UnescapeDataString(userInfo.ElementAtOrDefault(0) ?? "");
-        var password = Uri.UnescapeDataString(userInfo.ElementAtOrDefault(1) ?? "");
-        var host = uri.Host;
-        var port = uri.IsDefaultPort ? 5432 : uri.Port;
-        var database = uri.AbsolutePath.TrimStart('/');
-        // Optional query parameters (sslmode, etc.)
-        var builder = new StringBuilder();
-        void Add(string k, string v) { if (!string.IsNullOrEmpty(v)) builder.Append(k).Append('=').Append(v).Append(';'); }
-        Add("Host", host);
-        Add("Port", port.ToString());
-        Add("Username", username);
-        Add("Password", password);
-        Add("Database", database);
-        // Parse query parameters
-        var q = uri.Query;
-        if (!string.IsNullOrEmpty(q))
-        {
-            var query = System.Web.HttpUtility.ParseQueryString(q);
-            foreach (var key in query.AllKeys!)
-            {
-                var val = query[key];
-                if (!string.IsNullOrEmpty(key) && !string.IsNullOrEmpty(val))
-                    Add(key!, val!);
-            }
-        }
-        return builder.ToString();
-    }
-    return input; // unknown format, just return
-}
