@@ -72,7 +72,7 @@ builder.Services.AddCors(p => p.AddDefaultPolicy(policy =>
           .SetIsOriginAllowed(_ => allowOrigin == "*")));
 
 // ===== Health checks & Metrics =====
-builder.Services.AddHealthChecks().AddNpgSql(dbUrl, name: "postgres");
+// Health check registered once above with DB; only map metrics here.
 
 var app = builder.Build();
 
