@@ -1,15 +1,13 @@
-# build
 FROM mcr.microsoft.com/dotnet/sdk:8.0 AS build
 WORKDIR /src
-COPY Api.csproj .
-RUN dotnet restore Api.csproj --disable-parallel
+COPY *.csproj ./
+RUN dotnet restore --disable-parallel --source https://api.nuget.org/v3/index.json
 COPY . .
-RUN dotnet publish Api.csproj -c Release -o /app/out
+RUN dotnet publish -c Release -o /out /p:UseAppHost=false
 
-# runtime
 FROM mcr.microsoft.com/dotnet/aspnet:8.0
 WORKDIR /app
-COPY --from=build /app/out ./
+COPY --from=build /out .
 ENV ASPNETCORE_URLS=http://0.0.0.0:8080
 EXPOSE 8080
 ENTRYPOINT ["dotnet","Api.dll"]
