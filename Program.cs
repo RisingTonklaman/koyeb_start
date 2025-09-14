@@ -15,8 +15,9 @@ using Microsoft.OpenApi.Models;
 var builder = WebApplication.CreateBuilder(args);
 
 // ===== Config & Secrets =====
-var dbUrl = Environment.GetEnvironmentVariable("DATABASE_URL")
-            ?? builder.Configuration.GetConnectionString("Default");
+var rawDbUrl = Environment.GetEnvironmentVariable("DATABASE_URL")
+               ?? builder.Configuration.GetConnectionString("Default");
+var dbUrl = NormalizeDbUrl(rawDbUrl);
 var jwtSecret = Environment.GetEnvironmentVariable("JWT_SECRET") ?? "dev-secret-change";
 var allowOrigin = Environment.GetEnvironmentVariable("CORS_ORIGIN") ?? "*";
 
@@ -30,6 +31,7 @@ builder.Host.UseSerilog();
 
 // ===== DB =====
 builder.Services.AddDbContext<AppDb>(opt => opt.UseNpgsql(dbUrl));
+builder.Services.AddHealthChecks().AddNpgSql(dbUrl, name: "postgres");
 
 // ===== Auth (JWT) =====
 builder.Services
@@ -80,9 +82,6 @@ using (var scope = app.Services.CreateScope())
     var db = scope.ServiceProvider.GetRequiredService<AppDb>();
     db.Database.Migrate();
 }
-var hc = builder.Services.AddHealthChecks();
-if (!string.IsNullOrWhiteSpace(dbUrl))
-    hc.AddNpgSql(dbUrl, name: "postgres");
 
 // ===== Middleware =====
 app.UseSerilogRequestLogging();
@@ -162,4 +161,47 @@ static class Jwt
             claims: claims, notBefore: now, expires: now.Add(ttl), signingCredentials: creds);
         return new System.IdentityModel.Tokens.Jwt.JwtSecurityTokenHandler().WriteToken(jwt);
     }
+}
+
+// Convert postgres style DATABASE_URL to an Npgsql connection string if needed
+static string NormalizeDbUrl(string? input)
+{
+    if (string.IsNullOrWhiteSpace(input)) return input ?? string.Empty;
+    // Already looks like key=value;
+    if (input.Contains('=') && input.Contains(';')) return input; // assume already proper
+    // Expect formats like: postgres://user:pass@host:5432/dbname or postgresql://
+    if (input.StartsWith("postgres://", StringComparison.OrdinalIgnoreCase) ||
+        input.StartsWith("postgresql://", StringComparison.OrdinalIgnoreCase))
+    {
+        // Use Uri to parse
+        if (!Uri.TryCreate(input, UriKind.Absolute, out var uri)) return input; // fallback
+        var userInfo = uri.UserInfo.Split(':');
+        var username = Uri.UnescapeDataString(userInfo.ElementAtOrDefault(0) ?? "");
+        var password = Uri.UnescapeDataString(userInfo.ElementAtOrDefault(1) ?? "");
+        var host = uri.Host;
+        var port = uri.IsDefaultPort ? 5432 : uri.Port;
+        var database = uri.AbsolutePath.TrimStart('/');
+        // Optional query parameters (sslmode, etc.)
+        var builder = new StringBuilder();
+        void Add(string k, string v) { if (!string.IsNullOrEmpty(v)) builder.Append(k).Append('=').Append(v).Append(';'); }
+        Add("Host", host);
+        Add("Port", port.ToString());
+        Add("Username", username);
+        Add("Password", password);
+        Add("Database", database);
+        // Parse query parameters
+        var q = uri.Query;
+        if (!string.IsNullOrEmpty(q))
+        {
+            var query = System.Web.HttpUtility.ParseQueryString(q);
+            foreach (var key in query.AllKeys!)
+            {
+                var val = query[key];
+                if (!string.IsNullOrEmpty(key) && !string.IsNullOrEmpty(val))
+                    Add(key!, val!);
+            }
+        }
+        return builder.ToString();
+    }
+    return input; // unknown format, just return
 }
